@@ -1,0 +1,277 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # Test and build frontend
+  test-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./blog-frontend
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: blog-frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run type checking
+        run: npx tsc --noEmit
+
+      - name: Run unit tests
+        run: npm run test:ci
+
+      - name: Build frontend
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+
+      - name: Upload frontend build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: blog-frontend/.next
+          retention-days: 1
+
+  # Test and build backend
+  test-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./blog-backend
+    
+    services:
+      mongodb:
+        image: mongo:6.0
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: password
+        ports:
+          - 27017:27017
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: blog-backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run type checking
+        run: npx tsc --noEmit
+
+      - name: Run unit tests
+        run: npm run test
+        env:
+          DATABASE_URL: mongodb://root:password@localhost:27017/blog-test?authSource=admin
+          JWT_SECRET: test-jwt-secret-key-for-github-actions
+          JWT_REFRESH_SECRET: test-refresh-secret-key-for-github-actions
+
+      - name: Run integration tests
+        run: npm run test:e2e
+        env:
+          DATABASE_URL: mongodb://root:password@localhost:27017/blog-test?authSource=admin
+          JWT_SECRET: test-jwt-secret-key-for-github-actions
+          JWT_REFRESH_SECRET: test-refresh-secret-key-for-github-actions
+
+      - name: Build backend
+        run: npm run build
+
+      - name: Upload backend build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-build
+          path: blog-backend/dist
+          retention-days: 1
+
+  # E2E tests (run after both builds complete)
+  e2e-tests:
+    needs: [test-frontend, test-backend]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    services:
+      mongodb:
+        image: mongo:6.0
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: password
+        ports:
+          - 27017:27017
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install backend dependencies
+        working-directory: ./blog-backend
+        run: npm ci
+
+      - name: Start backend server
+        working-directory: ./blog-backend
+        run: |
+          npm run build
+          npm run start:prod &
+          sleep 10
+        env:
+          DATABASE_URL: mongodb://root:password@localhost:27017/blog-test?authSource=admin
+          JWT_SECRET: test-jwt-secret-key-for-github-actions
+          JWT_REFRESH_SECRET: test-refresh-secret-key-for-github-actions
+          PORT: 4000
+
+      - name: Install frontend dependencies
+        working-directory: ./blog-frontend
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: ./blog-frontend
+        run: npx playwright install --with-deps
+
+      - name: Run E2E tests
+        working-directory: ./blog-frontend
+        run: npm run test:e2e
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+          NEXT_PUBLIC_SITE_URL: http://localhost:5001
+
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: blog-frontend/playwright-report/
+          retention-days: 30
+
+  # Deploy to production (only on main branch)
+  deploy-frontend:
+    needs: [test-frontend, test-backend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: ./blog-frontend
+          vercel-args: '--prod'
+
+  deploy-backend:
+    needs: [test-frontend, test-backend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Railway
+        uses: bervProject/railway-deploy@main
+        with:
+          railway_token: ${{ secrets.RAILWAY_TOKEN }}
+          service: blog-platform-api
+          
+      # Alternative: Deploy to Render
+      # - name: Deploy to Render
+      #   uses: johnbeynon/render-deploy-action@v0.0.8
+      #   with:
+      #     service-id: ${{ secrets.RENDER_SERVICE_ID }}
+      #     api-key: ${{ secrets.RENDER_API_KEY }}
+
+  # Post-deployment health checks
+  health-check:
+    needs: [deploy-frontend, deploy-backend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Frontend Health Check
+        run: |
+          echo "Checking frontend health..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.NEXT_PUBLIC_SITE_URL }}/health)
+          if [ $response -eq 200 ]; then
+            echo "✅ Frontend is healthy"
+          else
+            echo "❌ Frontend health check failed with status: $response"
+            exit 1
+          fi
+
+      - name: Backend Health Check
+        run: |
+          echo "Checking backend health..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.NEXT_PUBLIC_API_URL }}/health)
+          if [ $response -eq 200 ]; then
+            echo "✅ Backend is healthy"
+          else
+            echo "❌ Backend health check failed with status: $response"
+            exit 1
+          fi
+
+      - name: API Documentation Check
+        run: |
+          echo "Checking API documentation..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.NEXT_PUBLIC_API_URL }}/api-docs)
+          if [ $response -eq 200 ]; then
+            echo "✅ API documentation is accessible"
+          else
+            echo "⚠️ API documentation check failed with status: $response"
+          fi
+
+  # Notify on deployment status
+  notify:
+    needs: [health-check]
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Deployment Status
+        run: |
+          if [ "${{ needs.health-check.result }}" = "success" ]; then
+            echo "🎉 Deployment successful!"
+            echo "Frontend: ${{ secrets.NEXT_PUBLIC_SITE_URL }}"
+            echo "Backend: ${{ secrets.NEXT_PUBLIC_API_URL }}"
+            echo "API Docs: ${{ secrets.NEXT_PUBLIC_API_URL }}/api-docs"
+          else
+            echo "💥 Deployment failed!"
+            exit 1
+          fi

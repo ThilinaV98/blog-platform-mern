@@ -1,0 +1,328 @@
+name: Production Deployment
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      deploy_frontend:
+        description: 'Deploy Frontend'
+        required: true
+        default: 'true'
+        type: boolean
+      deploy_backend:
+        description: 'Deploy Backend'
+        required: true
+        default: 'true'
+        type: boolean
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # Pre-deployment checks
+  pre-deployment:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend_changed: ${{ steps.changes.outputs.frontend }}
+      backend_changed: ${{ steps.changes.outputs.backend }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            frontend:
+              - 'blog-frontend/**'
+            backend:
+              - 'blog-backend/**'
+
+      - name: Environment validation
+        run: |
+          echo "🔍 Validating deployment environment..."
+          
+          # Check required secrets
+          required_secrets=(
+            "VERCEL_TOKEN"
+            "RAILWAY_TOKEN" 
+            "NEXT_PUBLIC_API_URL"
+            "NEXT_PUBLIC_SITE_URL"
+          )
+          
+          missing_secrets=()
+          for secret in "${required_secrets[@]}"; do
+            if [ -z "${{ secrets[secret] }}" ]; then
+              missing_secrets+=("$secret")
+            fi
+          done
+          
+          if [ ${#missing_secrets[@]} -ne 0 ]; then
+            echo "❌ Missing required secrets:"
+            printf '  - %s\n' "${missing_secrets[@]}"
+            exit 1
+          fi
+          
+          echo "✅ All required secrets are configured"
+
+  # Frontend deployment
+  deploy-frontend:
+    needs: pre-deployment
+    runs-on: ubuntu-latest
+    if: |
+      (needs.pre-deployment.outputs.frontend_changed == 'true' || 
+       github.event.inputs.deploy_frontend == 'true') &&
+      github.ref == 'refs/heads/main'
+    
+    defaults:
+      run:
+        working-directory: ./blog-frontend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: blog-frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify environment variables
+        run: node scripts/verify-env.js
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_APP_NAME: "Modern Blog Platform"
+
+      - name: Build application
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_APP_NAME: "Modern Blog Platform"
+          NODE_ENV: production
+
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        id: vercel-deploy
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: ./blog-frontend
+          vercel-args: '--prod'
+
+      - name: Frontend deployment status
+        run: |
+          echo "🚀 Frontend deployed successfully!"
+          echo "URL: ${{ steps.vercel-deploy.outputs.preview-url }}"
+
+  # Backend deployment
+  deploy-backend:
+    needs: pre-deployment
+    runs-on: ubuntu-latest
+    if: |
+      (needs.pre-deployment.outputs.backend_changed == 'true' || 
+       github.event.inputs.deploy_backend == 'true') &&
+      github.ref == 'refs/heads/main'
+    
+    defaults:
+      run:
+        working-directory: ./blog-backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: blog-backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Deploy to Railway
+        uses: bervProject/railway-deploy@main
+        with:
+          railway_token: ${{ secrets.RAILWAY_TOKEN }}
+          service: blog-platform-api
+
+      - name: Backend deployment status
+        run: |
+          echo "🚀 Backend deployed successfully!"
+          echo "API URL: ${{ secrets.NEXT_PUBLIC_API_URL }}"
+
+  # Post-deployment verification
+  verify-deployment:
+    needs: [deploy-frontend, deploy-backend]
+    runs-on: ubuntu-latest
+    if: always() && (needs.deploy-frontend.result == 'success' || needs.deploy-backend.result == 'success')
+    
+    steps:
+      - name: Wait for deployment propagation
+        run: sleep 30
+
+      - name: Verify frontend health
+        if: needs.deploy-frontend.result == 'success'
+        run: |
+          echo "🔍 Checking frontend health..."
+          max_attempts=10
+          attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt/$max_attempts"
+            
+            response=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.NEXT_PUBLIC_SITE_URL }}/health" || echo "000")
+            
+            if [ "$response" = "200" ]; then
+              echo "✅ Frontend is healthy (HTTP $response)"
+              break
+            else
+              echo "⚠️ Frontend not ready yet (HTTP $response)"
+              
+              if [ $attempt -eq $max_attempts ]; then
+                echo "❌ Frontend health check failed after $max_attempts attempts"
+                exit 1
+              fi
+              
+              sleep 30
+              attempt=$((attempt + 1))
+            fi
+          done
+
+      - name: Verify backend health
+        if: needs.deploy-backend.result == 'success'
+        run: |
+          echo "🔍 Checking backend health..."
+          max_attempts=10
+          attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt/$max_attempts"
+            
+            response=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.NEXT_PUBLIC_API_URL }}/health" || echo "000")
+            
+            if [ "$response" = "200" ]; then
+              echo "✅ Backend is healthy (HTTP $response)"
+              break
+            else
+              echo "⚠️ Backend not ready yet (HTTP $response)"
+              
+              if [ $attempt -eq $max_attempts ]; then
+                echo "❌ Backend health check failed after $max_attempts attempts"
+                exit 1
+              fi
+              
+              sleep 30
+              attempt=$((attempt + 1))
+            fi
+          done
+
+      - name: Test API endpoints
+        if: needs.deploy-backend.result == 'success'
+        run: |
+          echo "🔍 Testing critical API endpoints..."
+          
+          # Test health endpoint
+          curl -f "${{ secrets.NEXT_PUBLIC_API_URL }}/health" || exit 1
+          echo "✅ Health endpoint working"
+          
+          # Test API documentation
+          response=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.NEXT_PUBLIC_API_URL }}/api-docs")
+          if [ "$response" = "200" ]; then
+            echo "✅ API documentation accessible"
+          else
+            echo "⚠️ API documentation not accessible (HTTP $response)"
+          fi
+          
+          # Test public posts endpoint
+          response=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.NEXT_PUBLIC_API_URL }}/api/posts")
+          if [ "$response" = "200" ]; then
+            echo "✅ Posts API working"
+          else
+            echo "❌ Posts API failed (HTTP $response)"
+            exit 1
+          fi
+
+  # Deployment summary and notification
+  deployment-summary:
+    needs: [deploy-frontend, deploy-backend, verify-deployment]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Create deployment summary
+        run: |
+          echo "# 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Frontend status
+          if [ "${{ needs.deploy-frontend.result }}" = "success" ]; then
+            echo "✅ **Frontend**: Deployed successfully to Vercel" >> $GITHUB_STEP_SUMMARY
+            echo "   - URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.deploy-frontend.result }}" = "skipped" ]; then
+            echo "⏭️ **Frontend**: Skipped (no changes detected)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Frontend**: Deployment failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Backend status
+          if [ "${{ needs.deploy-backend.result }}" = "success" ]; then
+            echo "✅ **Backend**: Deployed successfully to Railway" >> $GITHUB_STEP_SUMMARY
+            echo "   - API URL: ${{ secrets.NEXT_PUBLIC_API_URL }}" >> $GITHUB_STEP_SUMMARY
+            echo "   - Documentation: ${{ secrets.NEXT_PUBLIC_API_URL }}/api-docs" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.deploy-backend.result }}" = "skipped" ]; then
+            echo "⏭️ **Backend**: Skipped (no changes detected)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Backend**: Deployment failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Health check status
+          if [ "${{ needs.verify-deployment.result }}" = "success" ]; then
+            echo "✅ **Health Checks**: All services are healthy" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Health Checks**: Some checks failed or were skipped" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "**Deployment Time**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Final deployment status
+        run: |
+          # Determine overall success
+          frontend_ok="${{ needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped' }}"
+          backend_ok="${{ needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped' }}"
+          health_ok="${{ needs.verify-deployment.result == 'success' || needs.verify-deployment.result == 'skipped' }}"
+          
+          if [[ "$frontend_ok" == "true" && "$backend_ok" == "true" && "$health_ok" == "true" ]]; then
+            echo "🎉 Deployment completed successfully!"
+            echo "Frontend: ${{ secrets.NEXT_PUBLIC_SITE_URL }}"
+            echo "Backend: ${{ secrets.NEXT_PUBLIC_API_URL }}"
+            echo "API Docs: ${{ secrets.NEXT_PUBLIC_API_URL }}/api-docs"
+          else
+            echo "💥 Deployment completed with issues!"
+            echo "Check the deployment summary above for details."
+            exit 1
+          fi

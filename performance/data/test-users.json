@@ -1,0 +1,62 @@
+[
+  {
+    "email": "perftest1@example.com",
+    "username": "perftest1",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 1"
+  },
+  {
+    "email": "perftest2@example.com",
+    "username": "perftest2",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 2"
+  },
+  {
+    "email": "perftest3@example.com",
+    "username": "perftest3",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 3"
+  },
+  {
+    "email": "perftest4@example.com",
+    "username": "perftest4",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 4"
+  },
+  {
+    "email": "perftest5@example.com",
+    "username": "perftest5",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 5"
+  },
+  {
+    "email": "perftest6@example.com",
+    "username": "perftest6",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 6"
+  },
+  {
+    "email": "perftest7@example.com",
+    "username": "perftest7",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 7"
+  },
+  {
+    "email": "perftest8@example.com",
+    "username": "perftest8",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 8"
+  },
+  {
+    "email": "perftest9@example.com",
+    "username": "perftest9",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 9"
+  },
+  {
+    "email": "perftest10@example.com",
+    "username": "perftest10",
+    "password": "TestPass123!",
+    "displayName": "Performance Test User 10"
+  }
+]

@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: blog-platform-api
+    env: node
+    region: oregon
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: blog-platform-db
+          property: connectionString
+    autoDeploy: false
+    plan: starter
+
+databases:
+  - name: blog-platform-db
+    databaseName: blog-platform
+    user: blog-user
+    region: oregon
+    plan: starter
+    version: "6.0"
+
+# Redis cache (optional)
+# services:
+#   - type: redis
+#     name: blog-platform-cache
+#     region: oregon
+#     plan: starter

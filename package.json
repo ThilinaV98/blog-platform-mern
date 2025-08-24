@@ -1,0 +1,36 @@
+{
+  "name": "blog-platform",
+  "version": "1.0.0",
+  "description": "Full-stack blog platform with Next.js and NestJS",
+  "scripts": {
+    "dev:frontend": "cd blog-frontend && npm run dev",
+    "dev:backend": "cd blog-backend && npm run start:dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "build:frontend": "cd blog-frontend && npm run build",
+    "build:backend": "cd blog-backend && npm run build",
+    "build": "npm run build:backend && npm run build:frontend",
+    "lint:frontend": "cd blog-frontend && npm run lint",
+    "lint:backend": "cd blog-backend && npm run lint",
+    "lint": "npm run lint:backend && npm run lint:frontend",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.5"
+  },
+  "workspaces": [
+    "blog-frontend",
+    "blog-backend"
+  ],
+  "lint-staged": {
+    "blog-frontend/**/*.{js,jsx,ts,tsx}": [
+      "cd blog-frontend && npm run lint --fix",
+      "cd blog-frontend && npm run format"
+    ],
+    "blog-backend/**/*.{js,ts}": [
+      "cd blog-backend && npm run lint --fix",
+      "cd blog-backend && npm run format"
+    ]
+  }
+}

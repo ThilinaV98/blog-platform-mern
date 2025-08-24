@@ -5,5 +5,17 @@
   "testRegex": ".e2e-spec.ts$",
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
-  }
+  },
+  "moduleNameMapper": {
+    "^src/(.*)$": "<rootDir>/../src/$1"
+  },
+  "coverageDirectory": "../coverage-e2e",
+  "collectCoverageFrom": [
+    "../src/**/*.(t|j)s",
+    "!../src/**/*.spec.ts",
+    "!../src/**/*.interface.ts",
+    "!../src/**/*.module.ts",
+    "!../src/main.ts"
+  ],
+  "testTimeout": 30000
 }

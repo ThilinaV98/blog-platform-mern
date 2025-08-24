@@ -1,0 +1,347 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # Backend Tests
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      mongodb:
+        image: mongo:6
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: blog-backend
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: blog-backend/package-lock.json
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run linter
+        run: npm run lint
+      
+      - name: Run unit tests
+        run: npm run test:cov
+        env:
+          NODE_ENV: test
+          JWT_SECRET: test-secret
+          MONGODB_URI: mongodb://localhost:27017/blog-test
+      
+      - name: Run integration tests
+        run: npm run test:e2e
+        env:
+          NODE_ENV: test
+          JWT_SECRET: test-secret
+          MONGODB_URI: mongodb://localhost:27017/blog-test
+      
+      - name: Upload backend coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: blog-backend/coverage
+      
+      - name: Coverage check
+        run: |
+          COVERAGE=$(npm run test:cov -- --coverageReporters=json-summary | grep "statements" | grep -o '[0-9.]*' | head -1)
+          echo "Backend coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 70" | bc -l) )); then
+            echo "Coverage is below 70%"
+            exit 1
+          fi
+
+  # Frontend Tests
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: blog-frontend
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: blog-frontend/package-lock.json
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run linter
+        run: npm run lint
+      
+      - name: Run unit tests with coverage
+        run: npm run test:ci
+        env:
+          NODE_ENV: test
+      
+      - name: Upload frontend coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: blog-frontend/coverage
+      
+      - name: Coverage check
+        run: |
+          COVERAGE=$(cat coverage/coverage-summary.json | jq '.total.statements.pct')
+          echo "Frontend coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 70" | bc -l) )); then
+            echo "Coverage is below 70%"
+            exit 1
+          fi
+
+  # E2E Tests
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests]
+    
+    services:
+      mongodb:
+        image: mongo:6
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      # Install backend dependencies
+      - name: Install backend dependencies
+        working-directory: blog-backend
+        run: npm ci
+      
+      # Install frontend dependencies
+      - name: Install frontend dependencies
+        working-directory: blog-frontend
+        run: npm ci
+      
+      # Install Playwright browsers
+      - name: Install Playwright Browsers
+        working-directory: blog-frontend
+        run: npx playwright install --with-deps
+      
+      # Start backend server
+      - name: Start backend server
+        working-directory: blog-backend
+        run: |
+          npm run start:dev &
+          npx wait-on http://localhost:4000/health -t 60000
+        env:
+          NODE_ENV: test
+          PORT: 4000
+          JWT_SECRET: test-secret
+          MONGODB_URI: mongodb://localhost:27017/blog-test
+      
+      # Run E2E tests
+      - name: Run Playwright tests
+        working-directory: blog-frontend
+        run: npm run test:e2e
+        env:
+          BASE_URL: http://localhost:5001
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+      
+      # Upload test results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: blog-frontend/playwright-report/
+          retention-days: 30
+      
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: blog-frontend/test-results/
+          retention-days: 30
+
+  # Build and Deploy (only on main branch)
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests, e2e-tests]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      # Build backend
+      - name: Build backend
+        working-directory: blog-backend
+        run: |
+          npm ci
+          npm run build
+      
+      # Build frontend
+      - name: Build frontend
+        working-directory: blog-frontend
+        run: |
+          npm ci
+          npm run build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.PRODUCTION_API_URL }}
+      
+      # Docker build and push (if using Docker)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      - name: Build and push backend Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./blog-backend
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/blog-backend:latest
+      
+      - name: Build and push frontend Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./blog-frontend
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/blog-frontend:latest
+      
+      # Deploy to production (example with SSH)
+      - name: Deploy to production
+        if: false # Enable when deployment is configured
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            cd /app
+            docker-compose pull
+            docker-compose up -d
+            docker system prune -f
+
+  # Generate and publish test report
+  test-report:
+    name: Generate Test Report
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests, e2e-tests]
+    if: always()
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: test-artifacts
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Generate consolidated test report
+        run: |
+          node scripts/generate-ci-test-report.js
+        env:
+          ARTIFACTS_PATH: test-artifacts
+      
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        with:
+          name: consolidated-test-report
+          path: test-report.html
+      
+      # Comment on PR with test results
+      - name: Comment PR with test results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('test-report-summary.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+
+  # Security scanning
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      # Run npm audit
+      - name: Backend security audit
+        working-directory: blog-backend
+        run: npm audit --audit-level=high
+        continue-on-error: true
+      
+      - name: Frontend security audit
+        working-directory: blog-frontend
+        run: npm audit --audit-level=high
+        continue-on-error: true
+      
+      # Run CodeQL analysis
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript, typescript
+      
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+      
+      # Run Snyk security scan
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high

@@ -1,0 +1,40 @@
+{
+  "name": "blog-platform-performance-tests",
+  "version": "1.0.0",
+  "description": "Performance testing suite for blog platform using k6",
+  "scripts": {
+    "test:smoke": "k6 run --config k6.config.js --env TEST_TYPE=smoke tests/api-load-test.js",
+    "test:load": "k6 run --config k6.config.js --env TEST_TYPE=load tests/api-load-test.js",
+    "test:stress": "k6 run --config k6.config.js --env TEST_TYPE=stress tests/api-load-test.js",
+    "test:spike": "k6 run --config k6.config.js --env TEST_TYPE=spike tests/api-load-test.js",
+    "test:soak": "k6 run --config k6.config.js --env TEST_TYPE=soak tests/api-load-test.js",
+    "test:upload": "k6 run tests/upload-stress-test.js",
+    "test:frontend": "k6 run tests/frontend-performance.js",
+    "test:all": "npm run test:smoke && npm run test:load && npm run test:frontend",
+    "report:generate": "node scripts/generate-performance-report.js",
+    "setup:users": "node scripts/setup-test-users.js",
+    "cleanup": "rm -rf reports/*.html reports/*.json"
+  },
+  "devDependencies": {
+    "k6": "^0.47.0"
+  },
+  "k6": {
+    "thresholds": {
+      "http_req_duration": ["p(95)<500"],
+      "http_req_failed": ["rate<0.01"]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/blog-platform.git"
+  },
+  "keywords": [
+    "performance",
+    "testing",
+    "k6",
+    "load-testing",
+    "stress-testing"
+  ],
+  "author": "",
+  "license": "MIT"
+}
