@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { getImageUrl } from '@/lib/utils/image';
 import { useAuthStore } from '@/store/authStore';
 import { useCommentStore } from '@/store/commentStore';
 import { toast } from 'react-hot-toast';
@@ -75,7 +76,7 @@ export default function CommentForm({
       <div className="flex items-start space-x-3">
         {user?.profile?.avatar ? (
           <img
-            src={user.profile.avatar}
+            src={getImageUrl(user.profile.avatar)}
             alt={user.profile.displayName || user.username}
             className="w-10 h-10 rounded-full"
           />

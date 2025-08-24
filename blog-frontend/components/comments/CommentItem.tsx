@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { MessageCircle, MoreVertical, Edit2, Trash2, Flag } from 'lucide-react';
+import { getImageUrl } from '@/lib/utils/image';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -120,7 +121,7 @@ export default function CommentItem({
         {/* Author Avatar */}
         {author.profile?.avatar ? (
           <img
-            src={author.profile.avatar}
+            src={getImageUrl(author.profile.avatar)}
             alt={author.profile.displayName || author.username}
             className="w-10 h-10 rounded-full"
           />
